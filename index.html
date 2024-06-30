@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Wordle Clone</title>
+		<link rel="stylesheet" href="./style.css" />
+		<script
+			defer
+			src="https://unpkg.com/@alpinejs/persist@3.x.x/dist/cdn.min.js"
+		></script>
+		<script
+			defer
+			src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"
+		></script>
+		<script
+			src="https://cdn.socket.io/4.4.1/socket.io.min.js"
+			integrity="sha384-fKnu0iswBIqkjxrhQCTZ7qlLHOFEgNkRmK2vaO/LbTZSXdJfAu6ewRBdwHPhBo/H"
+			crossorigin="anonymous"
+		></script>
+		<script src="./words.js"></script>
+	</head>
+
+	<body x-data="wordle" x-bind="classList">
+		<template x-if="isLoading">
+			<div class="main-menu">
+				<main>
+					<button @click="isLoading = false;">Solo</button>
+					<hr />
+					<br />
+					<h2>Co-op</h2>
+					<button @click="openNewRoom = true;">Create Room</button>
+					<button @click="openJoinRoom = true;">Join Room</button>
+					<template x-if="coop.room.id">
+						<button @click="openCoopWaitRoom = true">View Room</button>
+					</template>
+				</main>
+				<div
+					x-show="openNewRoom || openJoinRoom || openCoopWaitRoom"
+					style="display: none"
+					x-on:keydown.escape.prevent.stop="openInfo = false"
+					x-on:click="openNewRoom = false; openJoinRoom = false; openCoopWaitRoom = false;"
+					role="dialog"
+					aria-modal="true"
+					x-id="['modal-title']"
+					:aria-labelledby="$id('modal-title')"
+					class="modal"
+				>
+					<div
+						x-data="{ hostDisplay: '' }"
+						x-show="openNewRoom"
+						x-on:click.stop
+						x-trap.noscroll.inert="openNewRoom"
+						x-transition
+						class="panel"
+					>
+						<div class="modal-header">
+							<div class="filler"></div>
+							<h3>New Co-op Room</h3>
+							<div @click="openNewRoom = false;" class="filler">X</div>
+						</div>
+						<input
+							x-model="hostDisplay"
+							type="text"
+							placeholder="Display Name"
+						/>
+						<button
+							@click="() => {openNewRoom = false; openCoopWaitRoom = true; createCoopRoom(hostDisplay);}"
+						>
+							Create Room
+						</button>
+					</div>
+					<div
+						x-data="{ clientDisplay: '', roomId: '' }"
+						x-show="openJoinRoom"
+						x-on:click.stop
+						x-trap.noscroll.inert="openJoinRoom"
+						x-transition
+						class="panel"
+					>
+						<div class="modal-header">
+							<div class="filler"></div>
+							<h3>Join Co-op Room</h3>
+							<div @click="openJoinRoom = false;" class="filler">X</div>
+						</div>
+						<input
+							x-model="clientDisplay"
+							type="text"
+							placeholder="Display Name"
+						/>
+						<input x-model="roomId" type="text" placeholder="Room ID" />
+						<button
+							@click="openJoinRoom = false; openCoopWaitRoom = true; joinCoopRoom(clientDisplay, roomId);"
+						>
+							Join Room
+						</button>
+					</div>
+					<div
+						x-data="{  }"
+						x-show="openCoopWaitRoom"
+						x-on:click.stop
+						x-trap.noscroll.inert="openCoopWaitRoom"
+						x-transition
+						class="panel"
+					>
+						<div class="modal-header">
+							<div class="filler"></div>
+							<h3 x-text="'Room ' + coop.room.id"></h3>
+							<div @click="openCoopWaitRoom = false;" class="filler">X</div>
+						</div>
+						<template x-for="(clientId, i) of Object.keys(coop.room.members)">
+							<div>
+								<span x-text="coop.room.members[clientId].displayName"></span>
+								<span x-text="coop.room.members[clientId].ttc || 0"></span>
+							</div>
+						</template>
+						<template x-if="socket?.id === coop.room.id">
+							<button @click="startCoopGame();">Start Game</button>
+						</template>
+					</div>
+				</div>
+			</div>
+		</template>
+		<template x-if="!isLoading">
+			<div>
+				<header>
+					<nav>
+						<div class="menu">
+							<a @click="openInfo = true" class="info">?</a>
+							<a @click="reset()" class="reset"></a>
+						</div>
+						<h1 x-text="heading"></h1>
+						<div class="menu">
+							<a @click="openStatistics = true" class="statistics"></a>
+							<a @click="openSettings = true" class="settings"></a>
+						</div>
+					</nav>
+					<hr />
+				</header>
+				<main
+					x-data="{ gridPos: 0, currTry: 0, grid: Array(word.length * tries).fill(' '), animSquare: { pos: [], name: null },
+                    notRowStart(i=this.gridPos) {
+                        return i % word.length !== 0;
+                    },
+                    onCurrRow(i=this.gridPos) {
+                        return Math.floor(i / word.length) === this.currTry;
+                    },
+                    aboveCurrRow(i=this.gridPos) {
+                        return Math.floor(i / word.length) > this.currTry;
+                    },
+                    insertChar(char) {
+                        if(gameOver) return;
+                        if(this.onCurrRow()) this.grid[this.gridPos++] = char;
+
+						if(settings.animations)
+							this.animateSquare(this.gridPos - 1, 'pop');
+                    },
+                    backspace() {
+                        if(gameOver) return;
+                        if(this.notRowStart() || this.aboveCurrRow()) this.grid[--this.gridPos] = ' '; 
+                    },
+                    checkWord() {
+                        if(!this.aboveCurrRow()) return;
+
+						<!-- collect attempt -->
+                        let attempt = '';
+                        for(let i = 0; i < word.length; i++)
+                            attempt += this.grid[((this.gridPos - word.length)) + i];
+
+						<!-- restrict attempt: hard mode -->
+						if(settings.hardMode) {
+							let revealed = keyboard.status
+														.map((status, i) => (status === 'correct' || status === 'partial') ? i : -1)
+														.filter((status) => status >= 0);
+							if(!revealed.every((letter) => attempt.includes(keyboard.layout[letter]))) {
+								if(settings.animations)
+									for(let i = 0; i < word.length; i++)
+										this.animateSquare(((this.gridPos - word.length)) + i, 'shake');
+								
+								return;
+							}
+						}
+
+						<!-- restrict attempt: restrict guesses -->
+						if(settings.restrictGuesses && !guesses.includes(attempt.toLowerCase())) {
+							if(settings.animations)
+								for(let i = 0; i < word.length; i++)
+									this.animateSquare(((this.gridPos - word.length)) + i, 'shake');
+
+							return;
+						}
+
+						<!-- handle correct attempt -->
+                        this.currTry++;
+                        if(attempt === word) {
+                            gameOver = true;
+                            statistics.played++;
+                            statistics.totalWins++;
+                            statistics.winPerc = statistics.totalWins / statistics.played;
+                            statistics.currStreak++;
+                            if(statistics.maxStreak < statistics.currStreak) 
+                                statistics.maxStreak = statistics.currStreak;
+                            
+                            if(statistics.guesses[this.currTry]) statistics.guesses[this.currTry]++;
+                            else statistics.guesses[this.currTry] = 1;
+                            
+							if(settings.animations)
+								for(let i = 0; i < word.length; i++) 
+									this.animateSquare(((this.gridPos - word.length)) + i, 'bounce');
+							
+                            return;
+                        }
+
+						<!-- handle final failed attempt -->
+                        if(this.currTry === tries) {
+							gameOver = true;
+                            statistics.played++;
+                            statistics.winPerc = statistics.totalWins / statistics.played;
+                            statistics.currStreak = 0;
+                        }
+                    },
+                    getStatus(i) {
+                        if(this.onCurrRow(i) || this.aboveCurrRow(i)) return;
+
+                        let key = keyboard.layout.indexOf(this.grid[i]);
+                        
+                        if(word[i % word.length] === this.grid[i]) return this.setKeyStatus(key, 'correct');
+
+                        if(word.includes(this.grid[i])) return this.setKeyStatus(key, 'partial');
+
+                        return this.setKeyStatus(key, 'wrong');
+                    },
+                    setKeyStatus(key, status) {
+                        if(keyboard.status[key] !== ' ' && status !== 'correct') return status;
+
+                        keyboard.status[key] = status;
+                        return status;
+                    },
+					animateSquare(pos, name) {
+						this.animSquare.pos.push(pos);
+						this.animSquare.name = name;
+						setTimeout(() => this.animSquare.pos.splice(this.animSquare.pos.indexOf(pos), 1), 1000);
+					},
+					animateGridWave() {
+						this.grid.forEach((square, i) => {
+							setTimeout(() => this.animSquare.pos.push(i), 100 * i);
+						});
+
+						setTimeout(() => this.animSquare.pos = [], 1000);
+					},
+                }"
+					x-init="$watch('gameOver', (value) => gameState = grid); $watch('tries', (value) => grid = Array(word.length * value).fill(' ')); $effect(() => {if(currTry === 1) gameDirty = true});"
+					@insert.window="insertChar($event.detail.char)"
+					@delete.window="backspace()"
+					@enter.window="checkWord()"
+					:style="{ '--len': word.length, '--tries': tries }"
+					class="board center-content"
+				>
+					<template x-for="(_, i) of grid">
+						<div
+							x-text="grid[i]"
+							:style="grid[i] !== ' ' && onCurrRow(i) && {'border': '2px solid var(--clr-sq-dirty'}"
+							:class="getStatus(i) + ' ' + (animSquare.pos.includes(i) && animSquare.name)"
+							class="square"
+						></div>
+					</template>
+				</main>
+				<section x-data="{ wideKeys: [10, 18, 19, 27] }" class="keyboard">
+					<template x-for="(key, i) of keyboard.layout">
+						<button
+							x-data="{
+						getText() { 
+							if(key === '>') return 'ENTER';
+							return key;
+						},
+                        getEvent() {
+                            if(key === '>') return ['enter'];
+                            if(key === '<') return ['delete'];
+                            return ['insert', { char: key }];
+                        },
+                        getClasses() {
+                            let classList = keyboard.status[i];
+                            if(wideKeys.includes(i)) classList += ' grid-wide';
+                            if((key === 'A' || key === 'L')) classList += ' skinny';
+                            if(key === 'A') classList += ' align-right';
+
+                            return classList;
+                        },
+						keyPressed(pKey) {
+							if(pKey.toLowerCase() === key.toLowerCase()) return true;
+							if(pKey === 'Enter' && key === '>') return true;
+							if(pKey === 'Backspace' && key === '<') return true;
+
+							return false;
+						},
+                    }"
+							x-text="getText()"
+							@click.prevent="if(canPlay) $dispatch(...getEvent())"
+							@keydown.window="if(keyPressed($event.key) && canPlay) $dispatch(...getEvent())"
+							:class="getClasses()"
+						></button>
+					</template>
+				</section>
+
+				<!-- MODALS -->
+
+				<div
+					x-show="countdown > 0 || openInfo || openStatistics || openSettings"
+					style="display: none"
+					x-on:keydown.escape.prevent.stop="openInfo = false"
+					x-on:click="openInfo = false; openSettings = false; openStatistics = false;"
+					role="dialog"
+					aria-modal="true"
+					x-id="['modal-title']"
+					:aria-labelledby="$id('modal-title')"
+					:class="countdown > 0 && 'translucent'"
+					class="modal"
+				>
+					<div
+						x-data="{}"
+						x-show="countdown > 0"
+						x-on:click.stop
+						x-trap.noscroll.inert="openInfo"
+						x-transition
+						class="panel countdown"
+					>
+						<h1 x-text="Math.trunc(countdown)"></h1>
+					</div>
+					<div
+						x-data="{ exWords: ['WEARY', 'PILLS', 'VAGUE'] }"
+						x-show="openInfo"
+						x-on:click.stop
+						x-trap.noscroll.inert="openInfo"
+						x-transition
+						class="panel"
+					>
+						<div class="modal-header">
+							<div class="filler"></div>
+							<h3>HOW TO PLAY</h3>
+							<div @click="openInfo = false;" class="filler">X</div>
+						</div>
+						<span>Guess the <strong>WORDLE</strong> in </span
+						><span x-text="tries + ' tries.'"></span> <br /><br />
+						<p>
+							Each guess must be a valid full-length word. Hit the > button to
+							submit.
+						</p>
+						<p>
+							After each guess, the color of the tiles will change to show how
+							close your guess was to the word.
+						</p>
+						<hr />
+						<p><strong>Examples</strong></p>
+						<div :style="{ '--len': exWords[0].length }" class="example">
+							<template x-for="(letter, i) of exWords[0]">
+								<div
+									x-text="letter"
+									:class="i === 0 && 'correct'"
+									class="square"
+								></div>
+							</template>
+						</div>
+						<p>
+							The letter <strong x-text="exWords[0][0]"></strong> is in the word
+							and in the correct spot.
+						</p>
+						<div :style="{ '--len': exWords[1].length }" class="example">
+							<template x-for="(letter, i) of exWords[1]">
+								<div
+									x-text="letter"
+									:class="i === 1 && 'partial'"
+									class="square"
+								></div>
+							</template>
+						</div>
+						<p>
+							The letter <strong x-text="exWords[0][0]"></strong> is in the word
+							but in the wrong spot.
+						</p>
+						<div :style="{ '--len': exWords[2].length }" class="example">
+							<template x-for="(letter, i) of exWords[2]">
+								<div
+									x-text="letter"
+									:class="i === exWords[2].length - 2 && 'wrong'"
+									class="square"
+								></div>
+							</template>
+						</div>
+						<p>
+							The letter <strong x-text="exWords[0][0]"></strong> is not in the
+							word in any spot.
+						</p>
+						<br />
+						<hr />
+						<p><strong>A new WORDLE will be available each day!</strong></p>
+					</div>
+
+					<div
+						x-data="{  }"
+						x-show="openSettings"
+						x-on:click.stop
+						x-trap.noscroll.inert="openSettings"
+						x-transition
+						class="panel"
+					>
+						<div class="modal-header">
+							<div class="filler"></div>
+							<h3>SETTINGS</h3>
+							<div @click="openSettings = false;" class="filler">X</div>
+						</div>
+						<div class="setting">
+							<div>
+								<h3>Hard Mode</h3>
+								<small
+									>Any revealed hints must be used in subsequent guesses</small
+								>
+							</div>
+							<input
+								x-model="settings.hardMode"
+								:disabled="gameDirty"
+								type="checkbox"
+							/>
+						</div>
+						<hr />
+						<div class="setting">
+							<div>
+								<h3>Restrict Guesses</h3>
+								<small
+									>Only specific guesses from a curated list are allowed</small
+								>
+							</div>
+							<input
+								x-model="settings.restrictGuesses"
+								:disabled="gameDirty"
+								type="checkbox"
+							/>
+						</div>
+						<hr />
+						<div class="setting">
+							<h3>Dark Theme</h3>
+							<input x-model="settings.darkTheme" type="checkbox" />
+						</div>
+						<hr />
+						<div class="setting">
+							<div>
+								<h3>Color Blind Mode</h3>
+								<small>High contrast colors</small>
+							</div>
+							<input x-model="settings.colorBlind" type="checkbox" />
+						</div>
+						<hr />
+						<div class="setting">
+							<h3>Animations</h3>
+							<input x-model="settings.animations" type="checkbox" />
+						</div>
+						<hr />
+						<div class="setting">
+							<h3>Guesses</h3>
+							<input
+								x-model="settings.tries"
+								@click="settings.usingTries = true"
+								:class="settings.usingTries && 'sel-border'"
+								:disabled="gameDirty"
+								type="number"
+							/>
+							<span> OR </span>
+							<pre class="label">Per Letter </pre>
+							<input
+								x-model="settings.triesPerLetter"
+								@click="settings.usingTries = false"
+								:class="!settings.usingTries && 'sel-border'"
+								:disabled="gameDirty"
+								type="number"
+							/>
+						</div>
+						<hr />
+						<div class="setting">
+							<h3>Word Length</h3>
+							<div class="label">
+								<pre>Min. </pre>
+								<pre>Max. </pre>
+							</div>
+							<div>
+								<input
+									x-model="settings.minLen"
+									type="number"
+									:disabled="gameDirty"
+								/>
+								<input
+									x-model="settings.maxLen"
+									type="number"
+									:disabled="gameDirty"
+								/>
+							</div>
+						</div>
+						<hr />
+						<div class="setting">
+							<div @click="clearLocalStore()" class="btn-setting">
+								<h3>Clear Local Storage</h3>
+							</div>
+						</div>
+						<hr />
+					</div>
+
+					<div
+						x-data="{  }"
+						x-show="openStatistics"
+						x-on:click.stop
+						x-trap.noscroll.inert="openStatistics"
+						x-transition
+						class="panel floating"
+					>
+						<div class="modal-header">
+							<div class="filler"></div>
+							<h3>STATISTICS</h3>
+							<div @click="openStatistics = false;" class="filler">X</div>
+						</div>
+						<section class="main-stats">
+							<div class="data">
+								<h1 x-text="statistics.played"></h1>
+								<h1 x-text="(statistics.winPerc * 100).toFixed(0)"></h1>
+								<h1 x-text="statistics.currStreak"></h1>
+								<h1 x-text="statistics.maxStreak"></h1>
+							</div>
+							<div class="labels">
+								<small>Played</small>
+								<small>Win %</small>
+								<small>Current Streak</small>
+								<small>Max Streak</small>
+							</div>
+						</section>
+						<br />
+						<div class="modal-header justify-center">
+							<h3>GUESS DISTRIBUTION</h3>
+						</div>
+						<div class="distribution">
+							<template x-for="(guesses, i) of statistics.guesses">
+								<div x-show="i > 0" class="guesses">
+									<p x-text="i"></p>
+									<p
+										x-text="guesses ? guesses : 0"
+										:style="guesses > 0 && { 'flex': guesses / getMostCorrectGuesses() }"
+										:class="guesses > 0 ? 'correct' : 'wrong'"
+									></p>
+								</div>
+							</template>
+						</div>
+					</div>
+				</div>
+			</div>
+		</template>
+
+		<script>
+			function _joinCoopRoom(data, displayName, roomId) {
+				data.socket = io('https://ghgsrt-wordle-server.herokuapp.com/');
+				data.socket.on('connect', () => {
+					data.socket.emit(
+						'room:join',
+						roomId === -1 ? data.socket.id : roomId,
+						displayName
+					);
+					if (roomId === -1)
+						data.coop.room.members[data.socket.id] = { displayName };
+
+					data.coop.room.id = roomId === -1 ? data.socket.id : roomId;
+				});
+				data.socket.on('client:joined', (client) => {
+					data.coop.room.members[client.id] = {
+						displayName: client.displayName,
+					};
+					if (roomId === -1) {
+						data.socket.emit('room:members', {
+							target: client.id,
+							payload: data.coop.room.members,
+						});
+					}
+				});
+				data.socket.on('client:left', (id) => {
+					delete data.coop.room.members[id];
+					// data.coop.room.members = data.coop.room.members.filter(
+					// 	(client) => client.id !== id
+					// );
+				});
+				data.socket.on('room:members', (members) => {
+					data.coop.room.members = members;
+				});
+
+				data.socket.on('game:start', (word) => {
+					data.word = word;
+					data.heading = 'Co-op';
+					data.canPlay = false;
+					data.isLoading = false;
+					data.openCoopWaitRoom = false;
+					data.countdown = 5.5;
+					let interval;
+					setTimeout(() => {
+						data.canPlay = true;
+						data.startTime = new Date();
+						clearInterval(interval);
+					}, 5600);
+					interval = setInterval(() => {
+						if (data.countdown > 0)
+							data.countdown = parseFloat((data.countdown - 0.1).toFixed(2));
+					}, 100);
+
+					data.$watch('gameOver', (value) => {
+						data.endTime = new Date();
+						setTimeout(() => {
+							data.socket.emit('game:end', data.coop.room.id, {
+								ttc: ((data.endTime - data.startTime) / 1000).toFixed(3),
+								gameState: data.gameState,
+							});
+							data.openCoopWaitRoom = true;
+							data.isLoading = true;
+							data.heading = 'WORDLE';
+						}, 3000);
+					});
+				});
+
+				data.socket.on('game:end', (clientId, gameStats) => {
+					data.coop.room.members[clientId].ttc = gameStats.ttc;
+				});
+			}
+			document.addEventListener('alpine:init', () => {
+				Alpine.data('wordle', function () {
+					return {
+						init() {
+							this.$watch(
+								'settings.usingTries',
+								(value) =>
+									(this.tries = value
+										? this.settings.tries
+										: this.settings.triesPerLetter * this.word.length)
+							);
+							this.$watch('settings.tries', (value) => (this.tries = value));
+							this.$watch(
+								'settings.triesPerLetter',
+								(value) => (this.tries = value * this.word.length)
+							);
+							this.$watch('gameOver', (value) => (this.heading = this.word));
+							this.word = getWord();
+							// this.isLoading = false;
+						},
+						classList: {
+							[':class']() {
+								return (
+									(this.settings.darkTheme && 'dark-theme') +
+									' ' +
+									(this.settings.colorBlind && 'color-blind')
+								);
+							},
+						},
+						reset() {
+							// this.isLoading = true;
+							// this.word = getWord();
+							// this.gameDirty = false;
+							// this.gameOver = false;
+							// this.keyboard.status = Array(26).fill(' ');
+							// setTimeout(() => (this.isLoading = false), 0);
+							location.reload();
+						},
+						clearLocalStore() {
+							localStorage.clear();
+							location.reload();
+						},
+						getMostCorrectGuesses() {
+							let total = 0;
+							for (let guesses of this.statistics.guesses) total += guesses;
+
+							return total;
+						},
+						createCoopRoom(hostDisplay) {
+							_joinCoopRoom(this, hostDisplay, -1);
+						},
+						joinCoopRoom(clientDisplay, roomId) {
+							_joinCoopRoom(this, clientDisplay, roomId);
+						},
+						startCoopGame() {
+							this.socket.emit('game:start', this.word);
+						},
+						socket: null,
+						gameState: null,
+						startTime: 0,
+						endTime: 0,
+						countdown: 0,
+						canPlay: true,
+						word: '',
+						heading: 'WORDLE',
+						isLoading: true,
+						tries: this.$persist(6),
+						gameDirty: false,
+						gameOver: false,
+						keyboard: {
+							layout: 'QWERTYUIOPASDFGHJKL>ZXCVBNM<',
+							status: Array(27).fill(' '),
+						},
+						openNewRoom: false,
+						openJoinRoom: false,
+						openCoopWaitRoom: false,
+						openInfo: false,
+						openStatistics: false,
+						openSettings: false,
+						statistics: {
+							played: this.$persist(0),
+							winPerc: this.$persist(1),
+							totalWins: this.$persist(0),
+							currStreak: this.$persist(0),
+							maxStreak: this.$persist(0),
+							guesses: this.$persist([]),
+						},
+						coop: {
+							statistic: {},
+							room: {
+								id: null,
+								members: {},
+							},
+						},
+						settings: {
+							hardMode: this.$persist(false),
+							darkTheme: this.$persist(false),
+							colorBlind: this.$persist(false),
+							animations: this.$persist(true),
+							tries: this.$persist(6),
+							triesPerLetter: this.$persist(1),
+							usingTries: this.$persist(true),
+							minLen: this.$persist(5),
+							maxLen: this.$persist(5),
+							restrictGuesses: this.$persist(false),
+						},
+					};
+				});
+			});
+
+			function getWord() {
+				return answers[
+					Math.floor(Math.random() * answers.length)
+				].toUpperCase();
+			}
+
+			// life.onload = async () => {
+			// 	await future().then((bread) => get(bread));
+			// };
+		</script>
+	</body>
+</html>
