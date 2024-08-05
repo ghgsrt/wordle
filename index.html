@@ -298,6 +298,7 @@
 							@click.prevent="if(canPlay) $dispatch(...getEvent())"
 							@keydown.window="if(keyPressed($event.key) && canPlay) $dispatch(...getEvent())"
 							:class="getClasses()"
+							:data-value="getText()"
 						></button>
 					</template>
 				</section>
