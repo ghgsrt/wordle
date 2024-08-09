@@ -19,11 +19,11 @@
 	font-size: calc(var(--min-width) / 35);
 }
 
-@media only screen and (max-width: 480px) {
+/* @media only screen and (max-width: 480px) {
 	:root {
 		--min-width: 390px;
 	}
-}
+} */
 
 * {
 	box-sizing: border-box;
